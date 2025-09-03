@@ -1,5 +1,6 @@
 use std::{collections::{HashSet, VecDeque}, fmt, thread::sleep, vec};
 
+use ndarray::{Array1, Array2};
 use terminal_size::{Width, Height, terminal_size};
 use rand::prelude::*;
 
@@ -82,9 +83,8 @@ struct NNet {
 
 #[derive(Clone)]
 struct Layer {
-    neurons: Vec<f32>,
-    weights: Vec<Vec<f32>>,
-    biases: Vec<f32>,
+    weights: Array2<f32>,
+    biases: Array1<f32>,
     activation: Activation,
 }
 
@@ -94,6 +94,7 @@ struct Activation {
     func: fn(f32) -> f32,
 }
 
+#[allow(dead_code)]
 impl Activation {
     const TANH: Self = Self { name: "Tanh", func: |x| x.tanh() };
     const ARCTAN: Self = Self { name: "Arctan", func: |x| x.atan() };
@@ -121,36 +122,43 @@ impl fmt::Display for Activation {
     }
 }
 
+#[allow(dead_code)]
 impl NNet {
-    fn get_reandom_weight(w: usize, h: usize) -> Vec<Vec<f32>> {
+    fn get_reandom_weight(w: usize, h: usize) -> Array2<f32> {
         let mut rng = rand::rng();
-        (0..h).map(|_| {
-            (0..w).map(|_| rng.random_range(-1.0..1.0)).collect()
-        }).collect()
+        Array2::from_shape_fn((h, w), |_| {
+            rng.random_range(-1.0..1.0)
+        })
     }
 
-    fn get_random_biases(size: usize) -> Vec<f32> {
+    fn get_random_biases(size: usize) -> Array1<f32> {
         let mut rng = rand::rng();
-        (0..size).map(|_| rng.random_range(-1.0..1.0)).collect()
+        Array1::from_shape_fn(size, |_| {
+            rng.random_range(-1.0..1.0)
+        })
     }
 
     fn new(layer_sizes: &[usize], activations: Option<&[Activation]>) -> Self {
         let mut layers = Vec::new();
+        let mut rng = rand::rng();
 
-        for i in 0..layer_sizes.len() {
-            let neurons = vec![0.0; layer_sizes[i]];
+        layers.push(Layer {
+            weights: Array2::zeros((0, 0)),
+            biases: Array1::zeros(0),
+            activation: Activation::NONE,
+        });
+
+        for i in 1..layer_sizes.len() {
+            let input_size = layer_sizes[i - 1];
+            let output_size = layer_sizes[i];
             
-            let weights = if i > 0 {
-                Self::get_reandom_weight(layer_sizes[i-1], layer_sizes[i])
-            } else {
-                vec![]
-            };
-
-            let biases = if i > 0 {
-                Self::get_random_biases(layer_sizes[i])
-            } else {
-                vec![]
-            };
+            let weights = Array2::from_shape_fn((output_size, input_size), |_| {
+                rng.random_range(-1.0..1.0)
+            });
+            
+            let biases = Array1::from_shape_fn(output_size, |_| {
+                rng.random_range(-1.0..1.0)
+            });
 
             let activation = if let Some(acts) = activations {
                 acts.get(i).cloned().unwrap_or(Activation::TANH)
@@ -159,7 +167,6 @@ impl NNet {
             };
 
             layers.push(Layer {
-                neurons,
                 weights,
                 biases,
                 activation,
@@ -171,33 +178,29 @@ impl NNet {
 
     fn new_from_weights(
         layer_sizes: &[usize],
-        weights: Vec<Vec<Vec<f32>>>,
-        biases: Vec<Vec<f32>>,
+        weights: Vec<Array2<f32>>,
+        biases: Vec<Array1<f32>>,
         activations: Option<&[Activation]>
     ) -> Self {
         let mut layers = Vec::new();
 
-        for i in 0..layer_sizes.len() {
-            let neurons = vec![0.0; layer_sizes[i]];
-            
-            let layer_weights = if i > 0 {
-                if i - 1 < weights.len() {
-                    weights[i - 1].clone()
-                } else {
-                    Self::get_reandom_weight(layer_sizes[i-1], layer_sizes[i])
-                }
+        layers.push(Layer {
+            weights: Array2::zeros((0, 0)),
+            biases: Array1::zeros(0),
+            activation: Activation::NONE,
+        });
+
+        for i in 1..layer_sizes.len() {
+            let layer_weights = if i - 1 < weights.len() {
+                weights[i - 1].clone()
             } else {
-                vec![]
+                Self::get_reandom_weight(layer_sizes[i-1], layer_sizes[i])
             };
 
-            let biases = if i > 0 {
-                if i - 1 < biases.len() {
-                    biases[i - 1].clone()
-                } else {
-                    Self::get_random_biases(layer_sizes[i])
-                }
+            let layer_biases = if i - 1 < biases.len() {
+                biases[i - 1].clone()
             } else {
-                vec![]
+                Self::get_random_biases(layer_sizes[i])
             };
 
             let activation = if let Some(acts) = activations {
@@ -207,9 +210,8 @@ impl NNet {
             };
 
             layers.push(Layer {
-                neurons,
                 weights: layer_weights,
-                biases,
+                biases: layer_biases,
                 activation,
             });
         }
@@ -218,18 +220,14 @@ impl NNet {
     }
 
     fn get_dims(&self) -> Vec<usize> {
-        let mut dims = Vec::new();
-        for layer in &self.layers {
-            dims.push(layer.neurons.len());
-        }
-        dims
+        self.layers.iter().map(|layer| layer.weights.ncols()).collect()
     }
 
     fn get_layers_count(&self) -> usize {
         self.layers.len()
     }
 
-    fn get_weights(&self) -> Vec<Vec<Vec<f32>>> {
+    fn get_weights(&self) -> Vec<Array2<f32>> {
         let mut weights = Vec::new();
         for layer in self.layers.iter().skip(1) {
             weights.push(layer.weights.clone());
@@ -237,7 +235,7 @@ impl NNet {
         weights
     }
 
-    fn set_weights(&mut self, weights: Vec<Vec<Vec<f32>>>) {
+    fn set_weights(&mut self, weights: Vec<Array2<f32>>) {
         for (i, layer_weights) in weights.into_iter().enumerate() {
             if i < self.layers.len() {
                 self.layers[i].weights = layer_weights;
@@ -245,7 +243,7 @@ impl NNet {
         }
     }
 
-    fn get_biases(&self) -> Vec<Vec<f32>> {
+    fn get_biases(&self) -> Vec<Array1<f32>> {
         let mut biases = Vec::new();
         for layer in self.layers.iter().skip(1) {
             biases.push(layer.biases.clone());
@@ -253,31 +251,20 @@ impl NNet {
         biases
     }
 
-    fn feedforward(&mut self, inputs: &[f32]) -> Vec<f32> {
-        if inputs.len() != self.layers[0].neurons.len() {
-            panic!("Input size does not match the first layer size");
+    fn feedforward(&self, inputs: &[f32]) -> Vec<f32> {
+        if inputs.len() != self.layers[1].weights.ncols() {
+            panic!("Expected {} inputs, got {}", self.layers[0].biases.len(), inputs.len());
         }
 
-        self.layers[0].neurons.clone_from_slice(inputs);
+        let mut activations = Array1::from_vec(inputs.to_vec());
 
-        for i in 1..self.layers.len() {
-            let (prev_layers, curr_layers) = self.layers.split_at_mut(i);
+        for layer in self.layers.iter().skip(1) {
+            activations = &layer.weights.dot(&activations) + &layer.biases;
             
-            let prev_layer = &prev_layers[i - 1];
-            let curr_layer = &mut curr_layers[0];
-
-            for j in 0..curr_layer.neurons.len() {
-                let mut sum = curr_layer.biases[j];
-
-                for k in 0..prev_layer.neurons.len() {
-                    sum += prev_layer.neurons[k] * curr_layer.weights[j][k];
-                }
-
-                curr_layer.neurons[j] = curr_layer.activation.apply(sum);
-            }
+            activations.mapv_inplace(|x| layer.activation.apply(x));
         }
 
-        self.layers.last().unwrap().neurons.clone()
+        activations.to_vec()
     }
 
     fn print_weights(&self) {
@@ -291,50 +278,44 @@ impl NNet {
 
     fn print_activations(&self) {
         for (i, layer) in self.layers.iter().enumerate() {
-            println!("Layer {} activations ({}): ", i, layer.activation);
-            for (j, neuron) in layer.neurons.iter().enumerate() {
-                println!(" Neuron {}: {}", j, neuron);
-            }
+            println!("Layer {} activation: {}", i, layer.activation);
         }
     }
 
     fn mutate_weights(
-        weights_1: &mut Vec<Vec<f32>>,
-        weights_2: &Vec<Vec<f32>>,
-        biases_1: &mut Vec<f32>,
-        biases_2: &Vec<f32>,
+        weights_1: &mut Array2<f32>,
+        weights_2: &Array2<f32>,
+        biases_1: &mut Array1<f32>,
+        biases_2: &Array1<f32>,
         inheritance: f32,
         mutation_rate: f32,
         mutation_amount: f32,
     ) {
         let mut rng = rand::rng();
 
-        for i in 0..weights_1.len() {
-            for j in 0..weights_1[i].len() {
-                
-                if rng.random::<f32>() < inheritance {
-                    weights_1[i][j] = weights_2[i][j];
-                }
-                
-                if rng.random::<f32>() < mutation_rate {
-                    let mutation = mutation_amount * weights_1[i][j].abs();
-                    let change: f32 = rng.random_range(-mutation..mutation);
-                    weights_1[i][j] += change;
-                    weights_1[i][j] = weights_1[i][j].clamp(-1.0, 1.0);
-                }
-            }
-        }
-
-        for i in 0..biases_1.len() {
+        for (w1, w2) in weights_1.iter_mut().zip(weights_2.iter()) {
             if rng.random::<f32>() < inheritance {
-                biases_1[i] = biases_2[i];
+                *w1 = *w2;
             }
             
             if rng.random::<f32>() < mutation_rate {
-                let mutation = mutation_amount * biases_1[i].abs();
+                let mutation = mutation_amount * w1.abs();
                 let change: f32 = rng.random_range(-mutation..mutation);
-                biases_1[i] += change;
-                biases_1[i] = biases_1[i].clamp(-1.0, 1.0);
+                *w1 += change;
+                *w1 = w1.clamp(-1.0, 1.0);
+            }
+        }
+
+        for (b1, b2) in biases_1.iter_mut().zip(biases_2.iter()) {
+            if rng.random::<f32>() < inheritance {
+                *b1 = *b2;
+            }
+            
+            if rng.random::<f32>() < mutation_rate {
+                let mutation = mutation_amount * b1.abs();
+                let change: f32 = rng.random_range(-mutation..mutation);
+                *b1 += change;
+                *b1 = b1.clamp(-1.0, 1.0);
             }
         }
     }      
@@ -424,7 +405,7 @@ fn main() {
     ];
     
     let mut last_best_distance = -1.0;
-    let mut Survivors: Vec<NNet> = (0..SURVIVORS).map(|_| NNet::new(NETWORK_STRUCTURE, Some(ACTIVATIONS))).collect();
+    let mut survivors: Vec<NNet> = (0..SURVIVORS).map(|_| NNet::new(NETWORK_STRUCTURE, Some(ACTIVATIONS))).collect();
 
     let (mut goal_x, mut goal_y) = arena.random_position();
     let (mut goal_nx, mut goal_ny) = arena.rel_pos(goal_x, goal_y);
@@ -466,7 +447,7 @@ fn main() {
             if iteration > LEARNING_EPOCHS {
                 for l in 0..PUPLATION_SIZE {
                     let idx = l % SURVIVORS;
-                    agents.push(Survivors[idx].clone());
+                    agents.push(survivors[idx].clone());
                 }
             }
 
@@ -478,8 +459,8 @@ fn main() {
                     had_offspring.insert((parent1_idx, parent2_idx));
                     had_offspring.insert((parent2_idx, parent1_idx));
 
-                    let parent1 = &Survivors[parent1_idx as usize];
-                    let parent2 = &Survivors[parent2_idx as usize];
+                    let parent1 = &survivors[parent1_idx as usize];
+                    let parent2 = &survivors[parent2_idx as usize];
 
                     let mut weights = parent1.get_weights();
                     let weight_2 = parent2.get_weights();
@@ -612,7 +593,7 @@ fn main() {
         }
         best_dist_n_iters.push_back(distances[0].1);
 
-        Survivors = distances.iter().take(SURVIVORS).map(|(i, _)| agents[*i].clone()).collect();
+        survivors = distances.iter().take(SURVIVORS).map(|(i, _)| agents[*i].clone()).collect();
 
         iteration += 1;
         from_last_shift += 1;
