@@ -1,4 +1,4 @@
-use std::{collections::{HashSet, VecDeque}, fmt, thread::sleep, vec};
+use std::{collections::{HashSet, VecDeque}, fmt, io::Write, thread::sleep, vec};
 
 use ndarray::{Array1, Array2};
 use terminal_size::{Width, Height, terminal_size};
@@ -39,13 +39,8 @@ impl TerminalBuffer {
     }
 
     fn draw(&self) {
-        for row in 0..self.height {
-            for col in 0..self.width {
-                let idx = (row as usize) * (self.width as usize) + (col as usize);
-                print!("{}", self.buffer[idx]);
-            }
-            println!();
-        }
+        print!("{}", String::from_iter(self.buffer.iter()));
+        std::io::stdout().flush().unwrap();
     }
 
     fn draw_box(&mut self, x: u16, y: u16, w: u16, h: u16, filled: Option<char>) {
@@ -572,11 +567,12 @@ fn main() {
                 (i, dist)
             }).collect();
 
-            priv_frame_time = start_time.elapsed().as_millis();
+            let elapsed = start_time.elapsed();
             let frame_duration = std::time::Duration::from_millis(1000 / FRAME_RATE);
-            let time_to_sleep = frame_duration.saturating_sub(start_time.elapsed()).as_millis() as u64;
-
-            sleep(std::time::Duration::from_millis(time_to_sleep));
+            if elapsed < frame_duration {
+                sleep(frame_duration - elapsed);
+            }
+            priv_frame_time = elapsed.as_millis();
         }
 
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -601,13 +597,6 @@ fn main() {
 }
 
 fn clear_terminal() {
-    if cfg!(debug_assertions) {
-        if cfg!(target_os = "windows") {
-            std::process::Command::new("cls").status().unwrap();
-        } else {
-            std::process::Command::new("clear").status().unwrap();
-        }
-    } else {
-        print!("\x1b[2J\x1b[H");
-    }
+    print!("\x1b[?25l\x1b[2J\x1b[H");
+    std::io::stdout().flush().unwrap();
 }
