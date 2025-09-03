@@ -84,6 +84,7 @@ struct NNet {
 struct Layer {
     neurons: Vec<f32>,
     weights: Vec<Vec<f32>>,
+    biases: Vec<f32>,
     activation: Activation,
 }
 
@@ -128,6 +129,11 @@ impl NNet {
         }).collect()
     }
 
+    fn get_random_biases(size: usize) -> Vec<f32> {
+        let mut rng = rand::rng();
+        (0..size).map(|_| rng.random_range(-1.0..1.0)).collect()
+    }
+
     fn new(layer_sizes: &[usize], activations: Option<&[Activation]>) -> Self {
         let mut layers = Vec::new();
 
@@ -136,6 +142,12 @@ impl NNet {
             
             let weights = if i > 0 {
                 Self::get_reandom_weight(layer_sizes[i-1], layer_sizes[i])
+            } else {
+                vec![]
+            };
+
+            let biases = if i > 0 {
+                Self::get_random_biases(layer_sizes[i])
             } else {
                 vec![]
             };
@@ -149,6 +161,7 @@ impl NNet {
             layers.push(Layer {
                 neurons,
                 weights,
+                biases,
                 activation,
             });
         }
@@ -156,7 +169,12 @@ impl NNet {
         Self { layers }
     }
 
-    fn new_from_weights(layer_sizes: &[usize], weights: Vec<Vec<Vec<f32>>>, activations: Option<&[Activation]>) -> Self {
+    fn new_from_weights(
+        layer_sizes: &[usize],
+        weights: Vec<Vec<Vec<f32>>>,
+        biases: Vec<Vec<f32>>,
+        activations: Option<&[Activation]>
+    ) -> Self {
         let mut layers = Vec::new();
 
         for i in 0..layer_sizes.len() {
@@ -172,6 +190,16 @@ impl NNet {
                 vec![]
             };
 
+            let biases = if i > 0 {
+                if i - 1 < biases.len() {
+                    biases[i - 1].clone()
+                } else {
+                    Self::get_random_biases(layer_sizes[i])
+                }
+            } else {
+                vec![]
+            };
+
             let activation = if let Some(acts) = activations {
                 acts.get(i).cloned().unwrap_or(Activation::TANH)
             } else {
@@ -181,6 +209,7 @@ impl NNet {
             layers.push(Layer {
                 neurons,
                 weights: layer_weights,
+                biases,
                 activation,
             });
         }
@@ -216,6 +245,14 @@ impl NNet {
         }
     }
 
+    fn get_biases(&self) -> Vec<Vec<f32>> {
+        let mut biases = Vec::new();
+        for layer in self.layers.iter().skip(1) {
+            biases.push(layer.biases.clone());
+        }
+        biases
+    }
+
     fn feedforward(&mut self, inputs: &[f32]) -> Vec<f32> {
         if inputs.len() != self.layers[0].neurons.len() {
             panic!("Input size does not match the first layer size");
@@ -230,7 +267,7 @@ impl NNet {
             let curr_layer = &mut curr_layers[0];
 
             for j in 0..curr_layer.neurons.len() {
-                let mut sum = 0.0;
+                let mut sum = curr_layer.biases[j];
 
                 for k in 0..prev_layer.neurons.len() {
                     sum += prev_layer.neurons[k] * curr_layer.weights[j][k];
@@ -264,11 +301,14 @@ impl NNet {
     fn mutate_weights(
         weights_1: &mut Vec<Vec<f32>>,
         weights_2: &Vec<Vec<f32>>,
+        biases_1: &mut Vec<f32>,
+        biases_2: &Vec<f32>,
         inheritance: f32,
         mutation_rate: f32,
         mutation_amount: f32,
     ) {
         let mut rng = rand::rng();
+
         for i in 0..weights_1.len() {
             for j in 0..weights_1[i].len() {
                 
@@ -280,14 +320,23 @@ impl NNet {
                     let mutation = mutation_amount * weights_1[i][j].abs();
                     let change: f32 = rng.random_range(-mutation..mutation);
                     weights_1[i][j] += change;
-                    if weights_1[i][j] > 1.0 {
-                        weights_1[i][j] = 1.0;
-                    } else if weights_1[i][j] < -1.0 {
-                        weights_1[i][j] = -1.0;
-                    }
+                    weights_1[i][j] = weights_1[i][j].clamp(-1.0, 1.0);
                 }
             }
-        } 
+        }
+
+        for i in 0..biases_1.len() {
+            if rng.random::<f32>() < inheritance {
+                biases_1[i] = biases_2[i];
+            }
+            
+            if rng.random::<f32>() < mutation_rate {
+                let mutation = mutation_amount * biases_1[i].abs();
+                let change: f32 = rng.random_range(-mutation..mutation);
+                biases_1[i] += change;
+                biases_1[i] = biases_1[i].clamp(-1.0, 1.0);
+            }
+        }
     }      
 }
 
@@ -341,14 +390,14 @@ fn main() {
         }
     };
 
-    const STEPS_PER_ITERATION: usize = 250;
-    const LEARNING_EPOCHS: usize = 50;
+    const STEPS_PER_ITERATION: usize = 150;
+    const LEARNING_EPOCHS: usize = 150;
     const PUPLATION_SIZE: usize = 100;
     const SURVIVORS: usize = 15;
     const INHERITANCE: f32 = 0.5;
     const MUTATION_RATE: f32 = 0.05;
     const MUTATION_AMOUNT: f32 = 0.1;
-    const FRAME_RATE: u64 = 120;
+    const FRAME_RATE: u64 = 60;
     const ITERS_TO_LOG: usize = 1;
     const GOAL_THRESHOLD: f32 = 1.2;    
     const NETWORK_STRUCTURE: &[usize] = &[4, 10, 14, 10, 2];
@@ -435,17 +484,22 @@ fn main() {
                     let mut weights = parent1.get_weights();
                     let weight_2 = parent2.get_weights();
 
+                    let mut biases = parent1.get_biases();
+                    let biases_2 = parent2.get_biases();
+
                     for i in 0..weights.len() {
                         NNet::mutate_weights(
                             &mut weights[i],
                             &weight_2[i],
+                            &mut biases[i],
+                            &biases_2[i],
                             INHERITANCE,
                             MUTATION_RATE,
                             MUTATION_AMOUNT,
                         );
                     }
 
-                    let child = NNet::new_from_weights(NETWORK_STRUCTURE, weights, Some(ACTIVATIONS));
+                    let child = NNet::new_from_weights(NETWORK_STRUCTURE, weights, biases, Some(ACTIVATIONS));
                     agents.push(child);
                 }
             }
@@ -512,7 +566,7 @@ fn main() {
                 arena_info_x += line.len() as u16 + 2;
             }
 
-            let best_distance: (usize, f32) = *distances.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+            let best_distance: (usize, f32) = *distances.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
             let best_agent_char = AGENT_CHARS[best_distance.0 % AGENT_CHARS.len()];
 
             terminal_buffer.type_text(arena_info_x, arena.y1 - 1, &format!("Best Distance ({}): {:.2}", best_agent_char, best_distance.1));
@@ -544,7 +598,7 @@ fn main() {
             sleep(std::time::Duration::from_millis(time_to_sleep));
         }
 
-        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         last_best_distance = distances[0].1;
         
         if avg_dist_n_iters.len() == ITERS_TO_LOG {
