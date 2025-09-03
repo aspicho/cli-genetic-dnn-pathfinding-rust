@@ -106,6 +106,8 @@ impl Activation {
         },
     };
     const NONE: Self = Self { name: "None", func: |x| x };
+    const SIN: Self = Self { name: "Sin", func: |x| x.sin() };
+    const HARD_STEP: Self = Self { name: "HardStep", func: |x| if x >= 0.0 { 1.0 } else { -1.0 } };
 
     fn apply(&self, x: f32) -> f32 {
         (self.func)(x)
@@ -340,16 +342,17 @@ fn main() {
     };
 
     const STEPS_PER_ITERATION: usize = 250;
+    const LEARNING_EPOCHS: usize = 50;
     const PUPLATION_SIZE: usize = 100;
     const SURVIVORS: usize = 15;
     const INHERITANCE: f32 = 0.5;
     const MUTATION_RATE: f32 = 0.05;
     const MUTATION_AMOUNT: f32 = 0.1;
     const FRAME_RATE: u64 = 120;
-    const ITERS_TO_LOG: usize = 3;
+    const ITERS_TO_LOG: usize = 1;
     const GOAL_THRESHOLD: f32 = 1.2;    
     const NETWORK_STRUCTURE: &[usize] = &[4, 10, 14, 10, 2];
-    const ACTIVATIONS: &[Activation] = &[Activation::APROX, Activation::APROX, Activation::APROX, Activation::APROX, Activation::APROX];
+    const ACTIVATIONS: &[Activation] = &[Activation::NONE, Activation::NONE, Activation::NONE, Activation::NONE, Activation::EXP];
     const GOAL_CHAR: char = '█';
     const AGENT_CHARS: &[char] = &['œ', '∑', 'ß', 'ƒ', '∆', 'æ', '@', '%', '©', 'µ'];
     
@@ -377,22 +380,23 @@ fn main() {
     let (mut goal_x, mut goal_y) = arena.random_position();
     let (mut goal_nx, mut goal_ny) = arena.rel_pos(goal_x, goal_y);
 
-    let mut last_n_iterations: VecDeque<f32> = VecDeque::with_capacity(ITERS_TO_LOG);
+    let mut avg_dist_n_iters: VecDeque<f32> = VecDeque::with_capacity(ITERS_TO_LOG);
+    let mut best_dist_n_iters: VecDeque<f32> = VecDeque::with_capacity(ITERS_TO_LOG);
     let mut goal_shifts = 0;
     let mut from_last_shift = 0;
     let mut iteration = 0;
     loop {
 
-        let average_best_distance = if last_n_iterations.len() > 0 {
-            last_n_iterations.iter().sum::<f32>() / last_n_iterations.len() as f32
+        let average_best_distance = if best_dist_n_iters.len() > 0 {
+            best_dist_n_iters.iter().sum::<f32>() / best_dist_n_iters.len() as f32
         } else {
             0.0
         };
 
-        if average_best_distance < GOAL_THRESHOLD && last_n_iterations.len() == ITERS_TO_LOG {
+        if (average_best_distance < GOAL_THRESHOLD && best_dist_n_iters.len() == ITERS_TO_LOG) || iteration > LEARNING_EPOCHS {
             (goal_x, goal_y) = arena.random_position();
             (goal_nx, goal_ny) = arena.rel_pos(goal_x, goal_y);
-            last_n_iterations.clear();
+            best_dist_n_iters.clear();
             goal_shifts += 1;
             from_last_shift = 0;
         }
@@ -409,6 +413,13 @@ fn main() {
             let mut agents: Vec<NNet> = vec![];
             let mut had_offspring: HashSet<(u32, u32)> = HashSet::new();
             let mut rng = rand::rng();
+
+            if iteration > LEARNING_EPOCHS {
+                for l in 0..PUPLATION_SIZE {
+                    let idx = l % SURVIVORS;
+                    agents.push(Survivors[idx].clone());
+                }
+            }
 
             while agents.len() < PUPLATION_SIZE {
                 let parent1_idx = rng.random_range(0..SURVIVORS) as u32;
@@ -480,10 +491,11 @@ fn main() {
             
 
             let step_info = vec![
-                format!("Iteration: {}", iteration),
+                format!("Iteration: {}/{}", iteration + 1, LEARNING_EPOCHS),
                 format!("Step: {}/{}", i + 1, STEPS_PER_ITERATION),
                 format!("Frame Time: {:.2} ms", priv_frame_time),
-                format!("Avg Dist: {:.2}", average_best_distance),
+                format!("Avg Dist: {:.2}", avg_dist_n_iters.iter().sum::<f32>() / avg_dist_n_iters.len().max(1) as f32),
+                format!("Avg Best Dist: {:.2}", average_best_distance),
                 format!("Goal Shifts: {}", goal_shifts),
                 format!("Iterations Since Last: {}", from_last_shift),
             ];
@@ -535,10 +547,16 @@ fn main() {
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         last_best_distance = distances[0].1;
         
-        if last_n_iterations.len() == ITERS_TO_LOG {
-            last_n_iterations.pop_front();
+        if avg_dist_n_iters.len() == ITERS_TO_LOG {
+            avg_dist_n_iters.pop_front();
         }
-        last_n_iterations.push_back(last_best_distance);
+        let avg = distances.iter().map(|(_, d)| *d).sum::<f32>() / distances.len() as f32;
+        avg_dist_n_iters.push_back(avg);
+
+        if best_dist_n_iters.len() == ITERS_TO_LOG {
+            best_dist_n_iters.pop_front();
+        }
+        best_dist_n_iters.push_back(distances[0].1);
 
         Survivors = distances.iter().take(SURVIVORS).map(|(i, _)| agents[*i].clone()).collect();
 
